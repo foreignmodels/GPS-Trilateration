@@ -9,14 +9,23 @@ receiver_x = np.random.randint(-100, 101)
 receiver_y = np.random.randint(-100, 101)
 
 # Satellite coordinates
-satellite1_x = np.random.randint(-100, 101)
-satellite1_y = np.random.randint(-100, 101)
+# keep rolling until no two satellites are within 30 km of each other,
+# satellites on top of each other make the math go crazy lol
+while True:
+    satellite1_x = np.random.randint(-100, 101)
+    satellite1_y = np.random.randint(-100, 101)
 
-satellite2_x = np.random.randint(-100, 101)
-satellite2_y = np.random.randint(-100, 101)
+    satellite2_x = np.random.randint(-100, 101)
+    satellite2_y = np.random.randint(-100, 101)
 
-satellite3_x = np.random.randint(-100, 101)
-satellite3_y = np.random.randint(-100, 101)
+    satellite3_x = np.random.randint(-100, 101)
+    satellite3_y = np.random.randint(-100, 101)
+
+    gap12 = np.hypot(satellite1_x - satellite2_x, satellite1_y - satellite2_y)
+    gap13 = np.hypot(satellite1_x - satellite3_x, satellite1_y - satellite3_y)
+    gap23 = np.hypot(satellite2_x - satellite3_x, satellite2_y - satellite3_y)
+    if min(gap12, gap13, gap23) >= 30:
+        break
 
 # 2D Distances
 distance1 = np.sqrt((receiver_x - satellite1_x)**2 + (receiver_y - satellite1_y)**2)
@@ -89,6 +98,7 @@ for i in range(3):
 # print(f"  Calculated: ({calculated[0]:.2f}, {calculated[1]:.2f})")
 
 # Save the results for trilateration.html (it loads data.js next to it)
+
 data = {
     "satellites": satellites.tolist(),
     "measured": [float(m) for m in measured],

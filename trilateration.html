@@ -179,16 +179,31 @@
         return Math.floor(Math.random() * 201) - 100;
       }
 
+      // true if any pair of satellites is closer than 30 km
+      function satellitesTooClose(satellites) {
+        for (let a = 0; a < satellites.length; a++) {
+          for (let b = a + 1; b < satellites.length; b++) {
+            if (distanceBetween(satellites[a], satellites[b]) < 30) return true;
+          }
+        }
+        return false;
+      }
+
       // creates a new scenario the same way the python does
       function makeRandomScenario() {
         // receiver coordinates
         const receiver = [randomCoordinate(), randomCoordinate()];
 
         // satellite coordinates
-        const satellites = [0, 1, 2].map(() => [
-          randomCoordinate(),
-          randomCoordinate(),
-        ]);
+        // keep rolling until no two satellites are within 30 km of each other,
+        // satellites on top of each other make the math blow up
+        let satellites;
+        do {
+          satellites = [0, 1, 2].map(() => [
+            randomCoordinate(),
+            randomCoordinate(),
+          ]);
+        } while (satellitesTooClose(satellites));
 
         // 2D distances
         const distances = satellites.map((satellite) =>
