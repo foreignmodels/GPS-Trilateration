@@ -1,5 +1,8 @@
+import json
+import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 
 # Receiver coordinates
 receiver_x = np.random.randint(-100, 101)
@@ -47,41 +50,55 @@ b = measured[0]**2 - measured[1:]**2
 b += np.sum(satellites[1:]**2, axis=1) - np.sum(satellites[0]**2)
 calculated = np.linalg.lstsq(A, b, rcond=None)[0]
 
+
 # Matplotlib graph
 plt.figure(figsize=(8, 8))
 
 colors = ["blue", "red", "green"]
 
 for i in range(3):
-    plt.gca().add_patch(plt.Circle(satellites[i], measured[i],
+    plt.gca().add_patch(Circle(satellites[i], measured[i],
                         fill=False, color=colors[i], linewidth=2))
     plt.scatter(satellites[i, 0], satellites[i, 1],
                 color=colors[i], marker="^", s=80,
                 label=f"Satellite {i + 1}")
 
-# Receiver location
-plt.scatter(calculated[0], calculated[1],
-            color="black", marker="o", s=100,
-            label="Calculated Receiver")
+# # Receiver location
+# plt.scatter(calculated[0], calculated[1],
+#             color="black", marker="o", s=100,
+#             label="Calculated Receiver")
 
-# Graph
-plt.xlim(-350, 350)
-plt.ylim(-350, 350)
-plt.gca().set_aspect("equal")
-plt.xlabel("X Position (km)")
-plt.ylabel("Y Position (km)")
-plt.title("GPS Trilateration Simulation")
-plt.grid(True, alpha=0.3)
-plt.legend()
+# # Graph
+# plt.xlim(-350, 350)
+# plt.ylim(-350, 350)
+# plt.gca().set_aspect("equal")
+# plt.xlabel("X Position (km)")
+# plt.ylabel("Y Position (km)")
+# plt.title("GPS Trilateration Simulation")
+# plt.grid(True, alpha=0.3)
+# plt.legend()
 
-# Results
-print("\nSatellite Distances:")
-print(f"  Satellite 1: {measured1:.2f} km")
-print(f"  Satellite 2: {measured2:.2f} km")
-print(f"  Satellite 3: {measured3:.2f} km")
+# # Results
+# print("\nSatellite Distances:")
+# print(f"  Satellite 1: {measured1:.2f} km")
+# print(f"  Satellite 2: {measured2:.2f} km")
+# print(f"  Satellite 3: {measured3:.2f} km")
 
-print("\nReceiver Coordinates:")
-print(f"  Actual:     ({receiver_x}, {receiver_y})")
-print(f"  Calculated: ({calculated[0]:.2f}, {calculated[1]:.2f})")
+# print("\nReceiver Coordinates:")
+# print(f"  Actual:     ({receiver_x}, {receiver_y})")
+# print(f"  Calculated: ({calculated[0]:.2f}, {calculated[1]:.2f})")
+
+# Save the results for trilateration.html (it loads data.js next to it)
+data = {
+    "satellites": satellites.tolist(),
+    "measured": [float(m) for m in measured],
+    "calculated": [float(c) for c in calculated],
+    "actual": [int(receiver_x), int(receiver_y)],
+}
+
+data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.js")
+with open(data_path, "w") as f:
+    f.write("window.DATA = " + json.dumps(data) + ";\n")
+print(f"\nWrote {data_path}")
 
 plt.show()

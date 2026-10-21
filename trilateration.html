@@ -1,0 +1,387 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>GPS Trilateration</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 16px;
+        max-width: 900px;
+      }
+      #controls {
+        margin: 8px 0;
+        display: flex;
+        gap: 16px;
+        align-items: center;
+      }
+      #results {
+        font-family: monospace;
+        font-size: 13px;
+        background: #f5f5f5;
+        padding: 8px 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="graph" style="width: 100%; height: 640px"></div>
+
+    <div id="controls">
+      <label
+        >Distance error (km):
+        <input
+          id="noiseSlider"
+          type="range"
+          min="0"
+          max="30"
+          step="0.5"
+          value="0"
+        />
+        <b id="noiseLabel">0</b>
+      </label>
+      <button id="rerollButton">Re-roll error</button>
+      <button id="newScenarioButton">New scenario</button>
+    </div>
+
+    <pre id="results"></pre>
+
+    <!-- python saves data.js here, if it's missing we use random points -->
+    <script src="data.js" onerror="void 0"></script>
+
+    <script>
+      const AXIS_LIMIT = 350;
+      const COLORS = ["#2563eb", "#dc2626", "#16a34a"];
+
+      let scenario;
+      let noiseDraws = [];
+
+      // km per second
+      const SPEED_OF_LIGHT = 299_792.458;
+
+      // straight line distance between two points
+      function distanceBetween(pointA, pointB) {
+        const dx = pointA[0] - pointB[0];
+        const dy = pointA[1] - pointB[1];
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      // read python file to see same math with numpy
+      // finds answer with least error possible
+      // nosie creates error, helps with noise slider
+      // used ai to make
+      function solveForXY(A, b) {
+        let sumXX = 0,
+          sumXY = 0,
+          sumYY = 0,
+          sumXB = 0,
+          sumYB = 0;
+
+        // add up every equation
+        for (let index = 0; index < A.length; index++) {
+          const x = A[index][0];
+          const y = A[index][1];
+          sumXX += x * x;
+          sumXY += x * y;
+          sumYY += y * y;
+          sumXB += x * b[index];
+          sumYB += y * b[index];
+        }
+
+        // 2 equations, 2 unknowns, so just use the determinant trick
+        const determinant = sumXX * sumYY - sumXY * sumXY;
+        const receiverX = (sumXB * sumYY - sumYB * sumXY) / determinant;
+        const receiverY = (sumXX * sumYB - sumXY * sumXB) / determinant;
+        return [receiverX, receiverY];
+      }
+
+      // same steps as the python version
+      function findReceiverPosition(satellites, distances) {
+        const first = satellites[0];
+        const others = satellites.slice(1);
+
+        // A = 2 * (satellites[1:] - satellites[0])
+        const A = others.map((sat) => [
+          2 * (sat[0] - first[0]),
+          2 * (sat[1] - first[1]),
+        ]);
+
+        // b = measured[0]**2 - measured[1:]**2
+        let b = others.map(
+          (sat, i) => distances[0] ** 2 - distances[i + 1] ** 2,
+        );
+
+        // b += sum(satellites[1:]**2) - sum(satellites[0]**2)
+        const firstSquared = first[0] ** 2 + first[1] ** 2;
+        b = b.map(
+          (value, i) =>
+            value + others[i][0] ** 2 + others[i][1] ** 2 - firstSquared,
+        );
+
+        // calculated = lstsq(A, b)
+        return solveForXY(A, b);
+      }
+
+      // builds list of points to trace circle
+      // plotly doesnt have draw circle command :/
+      // ai helped fix math
+      function makeCircle(centerX, centerY, radius) {
+        const xs = [],
+          ys = [];
+        for (let i = 0; i <= 240; i++) {
+          const angle = (2 * Math.PI * i) / 240;
+          xs.push(centerX + radius * Math.cos(angle));
+          ys.push(centerY + radius * Math.sin(angle));
+        }
+        return { xs, ys };
+      }
+
+      // where two circles cross (two circles can cross in 2 spots)
+      function findCrossings(centerA, radiusA, centerB, radiusB) {
+        // how far apart the two centers are
+        const dx = centerB[0] - centerA[0];
+        const dy = centerB[1] - centerA[1];
+        const gap = Math.hypot(dx, dy);
+
+        // circles too far apart, one inside the other, or same center = no crossings
+        if (
+          gap > radiusA + radiusB ||
+          gap < Math.abs(radiusA - radiusB) ||
+          gap === 0
+        )
+          return [];
+
+        // walk from center A toward center B until we're level with the crossing points
+        const along = (radiusA ** 2 - radiusB ** 2 + gap ** 2) / (2 * gap);
+        const midX = centerA[0] + (along * dx) / gap;
+        const midY = centerA[1] + (along * dy) / gap;
+
+        // the crossings sit this far above and below that spot (pythagoras)
+        const height = Math.sqrt(Math.max(radiusA ** 2 - along ** 2, 0));
+
+        // step sideways from the middle spot in both directions
+        return [
+          [midX + (height * dy) / gap, midY - (height * dx) / gap],
+          [midX - (height * dy) / gap, midY + (height * dx) / gap],
+        ];
+      }
+
+      // bell curve random number (javascript only has flat ones)
+      // ripped from online
+      function randomBellCurve() {
+        return (
+          Math.sqrt(-2 * Math.log(1 - Math.random())) *
+          Math.cos(2 * Math.PI * Math.random())
+        );
+      }
+
+      function randomCoordinate() {
+        return Math.floor(Math.random() * 201) - 100;
+      }
+
+      // creates a new scenario the same way the python does
+      function makeRandomScenario() {
+        // receiver coordinates
+        const receiver = [randomCoordinate(), randomCoordinate()];
+
+        // satellite coordinates
+        const satellites = [0, 1, 2].map(() => [
+          randomCoordinate(),
+          randomCoordinate(),
+        ]);
+
+        // 2D distances
+        const distances = satellites.map((satellite) =>
+          distanceBetween(receiver, satellite),
+        );
+
+        // simulated signal travel times
+        const times = distances.map((distance) => distance / SPEED_OF_LIGHT);
+
+        // measured distances from satellites to receiver
+        const measured = times.map((time) => SPEED_OF_LIGHT * time);
+
+        return { satellites, measured, actual: receiver };
+      }
+
+      // loads data to variable
+      function loadScenario(data) {
+        scenario = {
+          satellites: data.satellites,
+          distances: data.measured,
+          actual: data.actual,
+        };
+        rollNewNoise();
+      }
+
+      // creates new random noise
+      function rollNewNoise() {
+        noiseDraws = scenario.satellites.map(randomBellCurve);
+        drawEverything();
+      }
+
+      function drawEverything() {
+        const noiseAmount = Number(
+          document.getElementById("noiseSlider").value,
+        );
+        document.getElementById("noiseLabel").textContent = noiseAmount;
+
+        const satellites = scenario.satellites;
+        const distances = scenario.distances.map((d, i) =>
+          Math.max(d + noiseAmount * noiseDraws[i], 0),
+        );
+        const calculated = findReceiverPosition(satellites, distances);
+        const layers = [];
+
+        // circles
+        satellites.forEach((satellite, i) => {
+          const circle = makeCircle(satellite[0], satellite[1], distances[i]);
+          layers.push({
+            x: circle.xs,
+            y: circle.ys,
+            mode: "lines",
+            name: "Satellite " + (i + 1) + " range",
+            line: { color: COLORS[i], width: 2 },
+            hovertemplate:
+              distances[i].toFixed(2) +
+              " km<extra>Satellite " +
+              (i + 1) +
+              "</extra>",
+          });
+        });
+
+        // crossing points, spreads out with error
+        const crossingXs = [],
+          crossingYs = [];
+        for (let a = 0; a < satellites.length; a++) {
+          for (let b = a + 1; b < satellites.length; b++) {
+            findCrossings(
+              satellites[a],
+              distances[a],
+              satellites[b],
+              distances[b],
+            ).forEach((point) => {
+              crossingXs.push(point[0]);
+              crossingYs.push(point[1]);
+            });
+          }
+        }
+        layers.push({
+          x: crossingXs,
+          y: crossingYs,
+          mode: "markers",
+          name: "Circle crossings",
+          marker: { size: 6, color: "#888", symbol: "x" },
+        });
+
+        // satellites
+        layers.push({
+          x: satellites.map((s) => s[0]),
+          y: satellites.map((s) => s[1]),
+          mode: "markers+text",
+          name: "Satellites",
+          text: satellites.map((s, i) => "Sat " + (i + 1)),
+          textposition: "top center",
+          marker: { symbol: "triangle-up", size: 14, color: COLORS },
+        });
+
+        // real receiver + line to show how far off
+        if (scenario.actual) {
+          layers.push({
+            x: [scenario.actual[0], calculated[0]],
+            y: [scenario.actual[1], calculated[1]],
+            mode: "lines",
+            name: "Error",
+            line: { color: "black", width: 2, dash: "dot" },
+          });
+          layers.push({
+            x: [scenario.actual[0]],
+            y: [scenario.actual[1]],
+            mode: "markers",
+            name: "Actual receiver",
+            marker: {
+              symbol: "circle-open",
+              size: 16,
+              color: "black",
+              line: { width: 2 },
+            },
+          });
+        }
+
+        layers.push({
+          x: [calculated[0]],
+          y: [calculated[1]],
+          mode: "markers",
+          name: "Calculated receiver",
+          marker: { size: 10, color: "black" },
+        });
+
+        Plotly.react(
+          "graph",
+          layers,
+          {
+            title: "GPS Trilateration Simulation",
+            xaxis: {
+              title: "X Position (km)",
+              range: [-AXIS_LIMIT, AXIS_LIMIT],
+            },
+            yaxis: {
+              title: "Y Position (km)",
+              range: [-AXIS_LIMIT, AXIS_LIMIT],
+              scaleanchor: "x",
+            },
+            legend: { orientation: "h", y: -0.15 },
+            margin: { t: 50, r: 10, b: 50, l: 60 },
+          },
+          { responsive: true },
+        );
+
+        // text under the graph
+        let text = "";
+        distances.forEach((distance, i) => {
+          text += "Satellite " + (i + 1) + ": " + distance.toFixed(2) + " km\n";
+        });
+        // auto formatting fucked up this 
+        if (scenario.actual) {
+          const error = Math.hypot(
+            calculated[0] - scenario.actual[0],
+            calculated[1] - scenario.actual[1],
+          );
+          text +=
+            "Actual:     (" +
+            scenario.actual[0] +
+            ", " +
+            scenario.actual[1] +
+            ")\n";
+          text +=
+            "Calculated: (" +
+            calculated[0].toFixed(2) +
+            ", " +
+            calculated[1].toFixed(2) +
+            ")\n";
+          text += "Error: " + error.toFixed(2) + " km";
+        } else {
+          text +=
+            "Calculated: (" +
+            calculated[0].toFixed(2) +
+            ", " +
+            calculated[1].toFixed(2) +
+            ")";
+        }
+        document.getElementById("results").textContent = text;
+      }
+
+      document
+        .getElementById("noiseSlider")
+        .addEventListener("input", drawEverything);
+      document
+        .getElementById("rerollButton")
+        .addEventListener("click", rollNewNoise);
+      document
+        .getElementById("newScenarioButton")
+        .addEventListener("click", () => loadScenario(makeRandomScenario()));
+
+      loadScenario(window.DATA || makeRandomScenario());
+    </script>
+  </body>
+</html>
